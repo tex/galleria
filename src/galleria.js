@@ -1,5 +1,5 @@
 /**
- * @preserve Galleria v 1.2.7b8 2012-03-12
+ * @preserve Galleria v 1.2.7d2 2012-03-30
  * http://galleria.aino.se
  *
  * Copyright (c) 2012, Aino
@@ -1457,6 +1457,8 @@ Galleria = function() {
                             tooltip.open = false;
                         }, 1000);
                     });
+                }).click(function() {
+                    $( this ).trigger( 'mouseout' );
                 });
             };
 
@@ -1530,7 +1532,69 @@ Galleria = function() {
 
         keymap: self._keyboard.map,
 
-        enter: function(callback) {
+        // The native fullscreen handler
+        os: {
+
+            callback: F,
+
+            support: (function() {
+                var html = DOM().html;
+                return html.requestFullscreen || html.mozRequestFullScreen || html.webkitRequestFullScreen;
+            }()),
+
+            enter: function( callback ) {
+                fullscreen.os.callback = callback || F;
+                var html = DOM().html;
+                if ( html.requestFullscreen ) {
+                    html.requestFullscreen();
+                }
+                else if ( html.mozRequestFullScreen ) {
+                    html.mozRequestFullScreen();
+                }
+                else if ( html.webkitRequestFullScreen ) {
+                    html.webkitRequestFullScreen();
+                }
+            },
+
+            exit: function( callback ) {
+                fullscreen.os.callback = callback || F;
+                if ( doc.exitFullscreen ) {
+                    doc.exitFullscreen();
+                }
+                else if ( doc.mozCancelFullScreen ) {
+                    doc.mozCancelFullScreen();
+                }
+                else if ( doc.webkitCancelFullScreen ) {
+                    doc.webkitCancelFullScreen();
+                }
+            },
+
+            listen: function() {
+                if ( !fullscreen.os.support ) {
+                    return;
+                }
+                var handler = function() {
+                    if ( doc.fullscreen || doc.mozFullScreen || doc.webkitIsFullScreen ) {
+                        fullscreen._enter( fullscreen.os.callback );
+                    } else {
+                        fullscreen._exit( fullscreen.os.callback );
+                    }
+                };
+                doc.addEventListener( 'fullscreenchange', handler, false );
+                doc.addEventListener( 'mozfullscreenchange', handler, false );
+                doc.addEventListener( 'webkitfullscreenchange', handler, false );
+            }
+        },
+
+        enter: function( callback ) {
+            if ( self._options.trueFullscreen && fullscreen.os.support ) {
+                fullscreen.os.enter( callback );
+            } else {
+                fullscreen._enter( callback );
+            }
+        },
+
+        _enter: function( callback ) {
 
             fullscreen.active = true;
 
@@ -1648,7 +1712,15 @@ Galleria = function() {
             self.rescale();
         },
 
-        exit: function(callback) {
+        exit: function( callback ) {
+            if ( self._options.trueFullscreen && fullscreen.os.support ) {
+                fullscreen.os.exit( callback );
+            } else {
+                fullscreen._exit( callback );
+            }
+        },
+
+        _exit: function( callback ) {
 
             fullscreen.active = false;
 
@@ -1705,6 +1777,9 @@ Galleria = function() {
         }
     };
 
+    // invoke the native listeners
+    fullscreen.os.listen();
+
     // the internal idle object for controlling idle states
     var idle = this._idle = {
 
@@ -1746,7 +1821,7 @@ Galleria = function() {
             elem = jQuery(elem);
 
             $.each(idle.trunk, function(i, el) {
-                if ( el.length && !el.not(elem).length ) {
+                if ( el && el.length && !el.not(elem).length ) {
                     self._idle.show(elem);
                     self._idle.trunk.splice(i, 1);
                 }
@@ -2047,7 +2122,7 @@ Galleria = function() {
 
         show: function(index) {
 
-            lightbox.active = index = typeof index === 'number' ? index : self.getIndex();
+            lightbox.active = index = typeof index === 'number' ? index : self.getIndex() || 0;
 
             if ( !lightbox.initialized ) {
                 lightbox.init();
@@ -2228,6 +2303,7 @@ Galleria.prototype = {
             transition: 'fade',
             transitionInitial: undef, // legacy, deprecate in 1.3. Use initialTransition instead.
             transitionSpeed: 400,
+            trueFullscreen: true, // 1.2.7
             useCanvas: false, // 1.2.4
             vimeo: {
                 title: 0,
@@ -5203,6 +5279,7 @@ Galleria.Picture.prototype = {
 
         var i = 0,
             reload = false,
+            resort = false,
 
             // some jquery cache
             $container = $( this.container ),
@@ -5223,6 +5300,8 @@ Galleria.Picture.prototype = {
                             width: this.width
                         };
 
+                        self.container.appendChild( this );
+
                         self.cache[ src ] = src; // will override old cache
 
                         if (typeof callback == 'function' ) {
@@ -5240,8 +5319,14 @@ Galleria.Picture.prototype = {
                                 if ( img.width && img.height ) {
                                     complete.call( img );
                                 } else {
-                                    Galleria.raise('Could not extract width/height from image: ' + img.src +
-                                        '. Traced measures: width:' + img.width + 'px, height: ' + img.height + 'px.');
+                                    // last resort, this should never happen but just in case it does...
+                                    if ( !resort ) {
+                                        $(new Image()).load( onload ).attr( 'src', img.src );
+                                        resort = true;
+                                    } else {
+                                        Galleria.raise('Could not extract width/height from image: ' + img.src +
+                                            '. Traced measures: width:' + img.width + 'px, height: ' + img.height + 'px.');
+                                    }
                                 }
                             };
                         }( this )), 2);
@@ -5255,21 +5340,26 @@ Galleria.Picture.prototype = {
         $container.find( 'iframe,img' ).remove();
 
         // append the image
-        $image.css( 'display', 'block').appendTo( this.container );
+        $image.css( 'display', 'block');
 
         // hide it for now
         Utils.hide( this.image );
 
+        // remove any max/min scaling
+        $.each('minWidth minHeight maxWidth maxHeight'.split(' '), function(i, prop) {
+            $image.css(prop, /min/.test(prop) ? 0 : 'none');
+        });
+
         if ( this.cache[ src ] ) {
 
             // quick load on cache
-            $( this.image ).load( onload ).attr( 'src', src );
+            $image.load( onload ).attr( 'src', src );
 
             return this.container;
         }
 
         // begin load and insert in cache when done
-        $( this.image ).load( onload ).error( function() {
+        $image.load( onload ).error( function() {
             if ( !reload ) {
                 reload = true;
                 // reload the image with a timestamp
@@ -5361,6 +5451,7 @@ Galleria.Picture.prototype = {
                 return width && height;
             },
             success: function() {
+
                 // calculate some cropping
                 var newWidth = ( width - options.margin * 2 ) / self.original.width,
                     newHeight = ( height - options.margin * 2 ) / self.original.height,
